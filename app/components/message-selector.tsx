@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChatMessage, useAppConfig, useChatStore } from "../store";
 import { Updater } from "../typing";
 import { IconButton } from "./button";
@@ -7,6 +7,7 @@ import { MaskAvatar } from "./mask";
 import Locale from "../locales";
 
 import styles from "./message-selector.module.scss";
+import { getMessageTextContent } from "../utils";
 
 function useShiftRange() {
   const [startIndex, setStartIndex] = useState<number>();
@@ -51,9 +52,9 @@ function useShiftRange() {
 }
 
 export function useMessageSelector() {
-  const [selection, setSelection] = useState(new Set<number>());
-  const updateSelection: Updater<Set<number>> = (updater) => {
-    const newSelection = new Set<number>(selection);
+  const [selection, setSelection] = useState(new Set<string>());
+  const updateSelection: Updater<Set<string>> = (updater) => {
+    const newSelection = new Set<string>(selection);
     updater(newSelection);
     setSelection(newSelection);
   };
@@ -65,36 +66,50 @@ export function useMessageSelector() {
 }
 
 export function MessageSelector(props: {
-  selection: Set<number>;
-  updateSelection: Updater<Set<number>>;
+  selection: Set<string>;
+  updateSelection: Updater<Set<string>>;
   defaultSelectAll?: boolean;
   onSelected?: (messages: ChatMessage[]) => void;
 }) {
   const chatStore = useChatStore();
   const session = chatStore.currentSession();
   const isValid = (m: ChatMessage) => m.content && !m.isError && !m.streaming;
-  const messages = session.messages.filter(
-    (m, i) =>
-      m.id && // messsage must has id
-      isValid(m) &&
-      (i >= session.messages.length - 1 || isValid(session.messages[i + 1])),
+  const allMessages = useMemo(() => {
+    let startIndex = Math.max(0, session.clearContextIndex ?? 0);
+    if (startIndex === session.messages.length - 1) {
+      startIndex = 0;
+    }
+    return session.messages.slice(startIndex);
+  }, [session.messages, session.clearContextIndex]);
+
+  const messages = useMemo(
+    () =>
+      allMessages.filter(
+        (m, i) =>
+          m.id && // message must have id
+          isValid(m) &&
+          (i >= allMessages.length - 1 || isValid(allMessages[i + 1])),
+      ),
+    [allMessages],
   );
   const messageCount = messages.length;
   const config = useAppConfig();
 
   const [searchInput, setSearchInput] = useState("");
-  const [searchIds, setSearchIds] = useState(new Set<number>());
-  const isInSearchResult = (id: number) => {
+  const [searchIds, setSearchIds] = useState(new Set<string>());
+  const isInSearchResult = (id: string) => {
     return searchInput.length === 0 || searchIds.has(id);
   };
   const doSearch = (text: string) => {
-    const searchResuts = new Set<number>();
+    const searchResults = new Set<string>();
     if (text.length > 0) {
       messages.forEach((m) =>
-        m.content.includes(text) ? searchResuts.add(m.id!) : null,
+        getMessageTextContent(m).includes(text)
+          ? searchResults.add(m.id!)
+          : null,
       );
     }
-    setSearchIds(searchResuts);
+    setSearchIds(searchResults);
   };
 
   // for range selection
@@ -126,6 +141,8 @@ export function MessageSelector(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startIndex, endIndex]);
 
+  const LATEST_COUNT = 4;
+
   return (
     <div className={styles["message-selector"]}>
       <div className={styles["message-filter"]}>
@@ -155,7 +172,7 @@ export function MessageSelector(props: {
               props.updateSelection((selection) => {
                 selection.clear();
                 messages
-                  .slice(messageCount - 10)
+                  .slice(messageCount - LATEST_COUNT)
                   .forEach((m) => selection.add(m.id!));
               })
             }
@@ -174,6 +191,8 @@ export function MessageSelector(props: {
       <div className={styles["messages"]}>
         {messages.map((m, i) => {
           if (!isInSearchResult(m.id!)) return null;
+          const id = m.id ?? i;
+          const isSelected = props.selection.has(id);
 
           return (
             <div
@@ -183,7 +202,6 @@ export function MessageSelector(props: {
               key={i}
               onClick={() => {
                 props.updateSelection((selection) => {
-                  const id = m.id ?? i;
                   selection.has(id) ? selection.delete(id) : selection.add(id);
                 });
                 onClickIndex(i);
@@ -193,7 +211,10 @@ export function MessageSelector(props: {
                 {m.role === "user" ? (
                   <Avatar avatar={config.avatar}></Avatar>
                 ) : (
-                  <MaskAvatar mask={session.mask} />
+                  <MaskAvatar
+                    avatar={session.mask.avatar}
+                    model={m.model || session.mask.modelConfig.model}
+                  />
                 )}
               </div>
               <div className={styles["body"]}>
@@ -201,8 +222,12 @@ export function MessageSelector(props: {
                   {new Date(m.date).toLocaleString()}
                 </div>
                 <div className={`${styles["content"]} one-line`}>
-                  {m.content}
+                  {getMessageTextContent(m)}
                 </div>
+              </div>
+
+              <div className={styles["checkbox"]}>
+                <input type="checkbox" checked={isSelected} readOnly></input>
               </div>
             </div>
           );
